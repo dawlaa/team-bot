@@ -135,7 +135,7 @@ async def do_claim(interaction: discord.Interaction) -> None:
     if not t or t["status"] != "open":
         return await say(interaction, "ده مش تيكيت مفتوح.")
     if not is_staff(interaction.user, interaction.guild_id):
-        return await say(interaction, "❌ للفريق بس.")
+        return await say(interaction, "❌ للفريق بس.", ephemeral=True)
     if t["claimed_by"]:
         return await say(interaction, f"التيكيت مستلمه <@{t['claimed_by']}> بالفعل.")
     db.execute("UPDATE tickets SET claimed_by=? WHERE id=?", (interaction.user.id, t["id"]))
@@ -172,7 +172,7 @@ class TicketBtn(discord.ui.DynamicItem[discord.ui.Button], template=r"tkt:(?P<ac
         if not t or t["status"] != "open":
             return await say(interaction, "ده مش تيكيت مفتوح.")
         if interaction.user.id != t["user_id"] and not is_staff(interaction.user, interaction.guild_id):
-            return await say(interaction, "❌ مش مسموحلك تقفل التيكيت ده.")
+            return await say(interaction, "❌ مش مسموحلك تقفل التيكيت ده.", ephemeral=True)
         await interaction.response.send_message("متأكد إنك عايز تقفل التيكيت؟", view=ConfirmClose(), ephemeral=True)
 
     async def on_error(self, interaction, error):
@@ -234,7 +234,7 @@ async def tk_close(interaction: discord.Interaction, reason: str = ""):
     if not t or t["status"] != "open":
         return await say(interaction, "الأمر ده بيتكتب جوه روم تيكيت مفتوح.")
     if interaction.user.id != t["user_id"] and not is_staff(interaction.user, interaction.guild_id):
-        return await say(interaction, "❌ مش مسموحلك.")
+        return await say(interaction, "❌ مش مسموحلك.", ephemeral=True)
     await interaction.response.send_message("متأكد إنك عايز تقفل التيكيت؟", view=ConfirmClose(reason), ephemeral=True)
 
 
@@ -249,7 +249,7 @@ async def tk_add(interaction: discord.Interaction, user: discord.Member):
     if not t or t["status"] != "open":
         return await say(interaction, "الأمر ده جوه روم تيكيت مفتوح بس.")
     if not is_staff(interaction.user, interaction.guild_id):
-        return await say(interaction, "❌ للفريق بس.")
+        return await say(interaction, "❌ للفريق بس.", ephemeral=True)
     await interaction.channel.set_permissions(user, view_channel=True, send_messages=True, attach_files=True,
                                               read_message_history=True)
     await interaction.response.send_message(f"➕ اتضاف {user.mention} للتيكيت.")
@@ -262,7 +262,7 @@ async def tk_remove(interaction: discord.Interaction, user: discord.Member):
     if not t or t["status"] != "open":
         return await say(interaction, "الأمر ده جوه روم تيكيت مفتوح بس.")
     if not is_staff(interaction.user, interaction.guild_id):
-        return await say(interaction, "❌ للفريق بس.")
+        return await say(interaction, "❌ للفريق بس.", ephemeral=True)
     if user.id == t["user_id"]:
         return await say(interaction, "مينفعش تشيل صاحب التيكيت.")
     await interaction.channel.set_permissions(user, overwrite=None)

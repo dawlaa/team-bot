@@ -32,7 +32,7 @@ def active_items(gid: int) -> list:
     return db.execute("SELECT * FROM shop_items WHERE guild_id=? AND active=1 ORDER BY price", (gid,)).fetchall()
 
 
-def do_purchase(guild: discord.Guild, member: discord.Member, item_id: int):
+def do_purchase(guild: discord.Guild, member: discord.Member, item_id: int, delivery_info: str = ""):
     """بيرجع (ok, رسالة, order_id)."""
     item = get_item(guild.id, item_id)
     if not item or not item["active"]:
@@ -46,8 +46,8 @@ def do_purchase(guild: discord.Guild, member: discord.Member, item_id: int):
     if item["stock"] is not None:
         db.execute("UPDATE shop_items SET stock=stock-1 WHERE id=?", (item_id,))
     cur = db.execute(
-        "INSERT INTO orders(guild_id,user_id,item_id,item_name,price,ts) VALUES (?,?,?,?,?,?)",
-        (guild.id, member.id, item_id, item["name"], item["price"], time.time()))
+        "INSERT INTO orders(guild_id,user_id,item_id,item_name,price,ts,delivery_info) VALUES (?,?,?,?,?,?,?)",
+        (guild.id, member.id, item_id, item["name"], item["price"], time.time(), delivery_info))
     db.commit()
     left = get_user(guild.id, member.id)["avail"]
     return True, f"✅ اشتريت **{item['name']}** بـ {fmt_num(item['price'])} نقطة. رصيدك دلوقتي **{fmt_num(left)}**.", cur.lastrowid
@@ -59,9 +59,22 @@ def process_order(guild: discord.Guild, oid: int, action: str, actor_id: int):
     if not o:
         return False, "الطلب مش موجود.", None
     if o["status"] != "pending":
-        return False, f"الطلب ده اتعامل معاه قبل كده ({o['status']}).", o
+        return False, f"✅ تم تأكيد حالة الطلب مسبقاً ({o['status']}).", o
+    role_note = ""
     if action == "done":
         db.execute("UPDATE orders SET status='done', handled_by=? WHERE id=?", (actor_id, oid))
+        if o["item_id"]:
+            it = db.execute("SELECT role_id FROM shop_items WHERE id=?", (o["item_id"],)).fetchone()
+            if it and it["role_id"]:
+                role = guild.get_role(int(it["role_id"]))
+                member = guild.get_member(int(o["user_id"]))
+                if role and member:
+                    try:
+                        import asyncio
+                        asyncio.create_task(member.add_roles(role, reason=f"Shop Order #{oid}"))
+                        role_note = f" وتم تسليم الرول {role.mention}"
+                    except Exception as ex:
+                        role_note = f" (⚠️ تعذر تسليم الرول: {ex})" 
     else:
         db.execute("UPDATE orders SET status='refunded', handled_by=? WHERE id=?", (actor_id, oid))
         refund_points(guild.id, o["user_id"], o["price"])
@@ -77,6 +90,8 @@ def order_embed(o, status: Optional[str] = None) -> discord.Embed:
     e.add_field(name="العضو", value=f"<@{o['user_id']}>")
     e.add_field(name="المنتج", value=o["item_name"])
     e.add_field(name="السعر", value=f"{fmt_num(o['price'])} نقطة")
+    if o["delivery_info"]:
+        e.add_field(name="طريقة الاستلام / الدفع", value=str(o["delivery_info"]), inline=False)
     return e
 
 
@@ -89,19 +104,6 @@ def order_view(oid: int) -> discord.ui.View:
 
 async def post_order(guild: discord.Guild, member: discord.Member, oid: int) -> None:
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-    item = get_item(guild.id, o["item_id"]) if o["item_id"] else None
-    # منتج بيدّي رول: بيتسلم أوتوماتيك
-    if item and item["role_id"]:
-        role = guild.get_role(item["role_id"])
-        try:
-            if role:
-                await member.add_roles(role, reason=f"شراء من المتجر (طلب #{oid})")
-            db.execute("UPDATE orders SET status='done', handled_by=? WHERE id=?", (bot.user.id, oid))
-            db.commit()
-            await glog(guild, "shop", f"🛒 {member.mention} اشترى **{o['item_name']}** (طلب #{oid}) — اتسلم أوتوماتيك (رول).")
-            return
-        except discord.HTTPException:
-            pass  # مفيش صلاحية رولات → يتحول لطلب يدوي
     cid = cfg_int(guild.id, "shop_orders_channel", 0) or int(
         cfg_get(guild.id, "log:shop") or get_settings(guild.id)["log_channel_id"] or 0)
     ch = guild.get_channel(cid) if cid else None
@@ -145,6 +147,27 @@ class ShopView(discord.ui.View):
             self.add_item(ShopSelect(items))
 
 
+class DeliveryModal(discord.ui.Modal, title="📦 بيانات الاستلام / الدفع"):
+    def __init__(self, item_id: int):
+        super().__init__()
+        self.item_id = item_id
+        self.info_inp = discord.ui.TextInput(
+            label="طريقة الاستلام / الدفع (يوزر، محفظة، إلخ)",
+            placeholder="اكتب بياناتك هنا عشان الإدارة تسلمك الطلب...",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=300
+        )
+        self.add_item(self.info_inp)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        info = self.info_inp.value.strip()
+        ok, msg, oid = do_purchase(interaction.guild, interaction.user, self.item_id, info)
+        await interaction.response.edit_message(content=msg, embed=None, view=None)
+        if ok:
+            await post_order(interaction.guild, interaction.user, oid)
+
+
 class BuyConfirm(discord.ui.View):
     def __init__(self, item_id: int):
         super().__init__(timeout=60)
@@ -152,10 +175,7 @@ class BuyConfirm(discord.ui.View):
 
     @discord.ui.button(label="تأكيد الشراء", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        ok, msg, oid = do_purchase(interaction.guild, interaction.user, self.item_id)
-        await interaction.response.edit_message(content=msg, embed=None, view=None)
-        if ok:
-            await post_order(interaction.guild, interaction.user, oid)
+        await interaction.response.send_modal(DeliveryModal(self.item_id))
 
     @discord.ui.button(label="إلغاء", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -261,6 +281,56 @@ async def shop_add(interaction: discord.Interaction, name: str, price: app_comma
     await glog(interaction.guild, "shop", f"➕ {interaction.user.mention} ضاف منتج #{iid} {name} ({fmt_num(price)})")
 
 
+class EditItemModal(discord.ui.Modal, title="✏️ تعديل بيانات المنتج"):
+    def __init__(self, item_row, role_id=None, active_val=None):
+        super().__init__()
+        self.item_id = item_row["id"]
+        self.active_val = active_val
+        cur_role = role_id if role_id is not None else item_row["role_id"]
+        self.name_inp = discord.ui.TextInput(label="اسم المنتج", default=str(item_row["name"]), max_length=100)
+        self.price_inp = discord.ui.TextInput(label="السعر (بالنقاط)", default=str(item_row["price"]), max_length=20)
+        self.desc_inp = discord.ui.TextInput(label="الوصف", style=discord.TextStyle.paragraph, default=str(item_row["description"] or ""), required=False, max_length=300)
+        self.stock_inp = discord.ui.TextInput(label="الكمية المتاحة (-1 = غير محدود)", default=str(item_row["stock"]), max_length=10)
+        self.role_inp = discord.ui.TextInput(label="ID الرول أو اسمه (سيبه فاضي لإلغاء الرول)", default=str(cur_role) if cur_role else "", required=False, max_length=60)
+        self.add_item(self.name_inp)
+        self.add_item(self.price_inp)
+        self.add_item(self.desc_inp)
+        self.add_item(self.stock_inp)
+        self.add_item(self.role_inp)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            new_price = float(self.price_inp.value.strip())
+            new_stock = int(self.stock_inp.value.strip())
+            if new_price < 0:
+                raise ValueError
+        except ValueError:
+            await say(interaction, "❌ السعر أو الكمية غير صحيحة.", ephemeral=True)
+            return
+        new_name = self.name_inp.value.strip()
+        new_desc = self.desc_inp.value.strip()
+        raw_role = self.role_inp.value.strip().lstrip("<@&").rstrip(">")
+        new_role_id = None
+        if raw_role and raw_role != "0":
+            if raw_role.isdigit():
+                r_obj = interaction.guild.get_role(int(raw_role))
+            else:
+                r_obj = discord.utils.find(lambda r: r.name.lower() == raw_role.lower(), interaction.guild.roles)
+            if not r_obj:
+                await say(interaction, "❌ ملقتش رول بالاسم أو الـ ID ده في السيرفر.", ephemeral=True)
+                return
+            new_role_id = r_obj.id
+        if self.active_val is not None:
+            db.execute("UPDATE shop_items SET name=?, price=?, description=?, stock=?, role_id=?, active=? WHERE id=? AND guild_id=?",
+                       (new_name, new_price, new_desc, new_stock, new_role_id, self.active_val, self.item_id, interaction.guild_id))
+        else:
+            db.execute("UPDATE shop_items SET name=?, price=?, description=?, stock=?, role_id=? WHERE id=? AND guild_id=?",
+                       (new_name, new_price, new_desc, new_stock, new_role_id, self.item_id, interaction.guild_id))
+        db.commit()
+        role_msg = f" | الرول: <@&{new_role_id}>" if new_role_id else " | بدون رول"
+        await say(interaction, f"✅ تم تحديث المنتج **{new_name}** (السعر: **{fmt_num(new_price)}** نقطة{role_msg}) بنجاح.", ephemeral=True)
+
+
 @shop_group.command(name="edit", description="عدّل منتج")
 @app_commands.describe(item_id="رقم المنتج", active="تفعيل/إيقاف")
 @app_commands.check(manager_check)
@@ -268,16 +338,11 @@ async def shop_edit(interaction: discord.Interaction, item_id: int, name: Option
                     price: Optional[app_commands.Range[float, 0.01, 100000000.0]] = None,
                     description: Optional[str] = None, stock: Optional[app_commands.Range[int, 0, 1000000]] = None,
                     active: Optional[bool] = None):
-    item = get_item(interaction.guild_id, item_id)
-    if not item:
-        return await say(interaction, "مفيش منتج بالرقم ده.")
-    db.execute("UPDATE shop_items SET name=?, price=?, description=?, stock=?, active=? WHERE id=?", (
-        name or item["name"], price if price is not None else item["price"],
-        description if description is not None else item["description"],
-        stock if stock is not None else item["stock"], int(active) if active is not None else item["active"], item_id))
-    db.commit()
-    await say(interaction, f"✏️ اتعدّل المنتج `#{item_id}`.")
-
+    row = db.execute("SELECT * FROM shop_items WHERE id=? AND guild_id=?", (int(item_id), interaction.guild_id)).fetchone()
+    if not row:
+        await say(interaction, "❌ المنتج ده مش موجود.", ephemeral=True)
+        return
+    await interaction.response.send_modal(EditItemModal(row, role_id=None, active_val=(1 if active else 0) if active is not None else None))
 
 @shop_group.command(name="remove", description="احذف منتج")
 @app_commands.check(manager_check)

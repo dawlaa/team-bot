@@ -88,7 +88,7 @@ def add_payout(gid: int, uid: int, by_id: int, amount: float, note: str) -> int:
 def leaderboard(gid: int) -> list:
     return db.execute(
         "SELECT user_id, seconds, earned, adjust, earned+adjust AS total "
-        "FROM users WHERE guild_id=? ORDER BY total DESC",
+        "FROM users WHERE guild_id=? ORDER BY seconds DESC",
         (gid,),
     ).fetchall()
 

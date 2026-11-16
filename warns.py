@@ -145,4 +145,4 @@ bot.tree.add_command(warn_group)
 @bot.tree.command(name="mywarns", description="شوف ورناتك")
 @app_commands.guild_only()
 async def mywarns_cmd(interaction: discord.Interaction):
-    await say(interaction, embed=warns_embed(interaction.guild_id, interaction.user))
+    await say(interaction, embed=warns_embed(interaction.guild_id, interaction.user), ephemeral=True)

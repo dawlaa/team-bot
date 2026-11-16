@@ -1,0 +1,4 @@
+.env
+tracker.db
+*.zip
+__pycache__/

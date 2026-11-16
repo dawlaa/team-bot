@@ -46,7 +46,7 @@ def top_embed(guild: discord.Guild) -> Optional[discord.Embed]:
         return None
     medals = ["🥇", "🥈", "🥉"]
     lines = [
-        f"{medals[i] if i < 3 else f'`{i + 1}.`'} <@{r['user_id']}> — **{fmt_num(r['total'])}** نقطة ({fmt_dur(r['seconds'])})"
+        f"{medals[i] if i < 3 else f'`{i + 1}.`'} <@{r['user_id']}> — **{fmt_dur(r['seconds'])}**"
         for i, r in enumerate(board)
     ]
     return emb("🏆 المتصدرين", "\n".join(lines), color=0xF1C40F)
@@ -181,7 +181,7 @@ bot.tree.add_command(pay_group)
 @bot.tree.command(name="me", description="شوف نقاطك ووقتك ومستحقاتك")
 @app_commands.guild_only()
 async def me_cmd(interaction: discord.Interaction):
-    await say(interaction, embed=user_embed(interaction.guild, interaction.user))
+    await say(interaction, embed=user_embed(interaction.guild, interaction.user), ephemeral=True)
 
 
 @bot.tree.command(name="user", description="شوف نقاط عضو معين")
@@ -293,7 +293,9 @@ async def _wait_ar():
     await bot.wait_until_ready()
 
 
-SETUP_HOOKS.append(lambda b: auto_report.start())
+@bot.listen("on_ready")
+async def _start_ar():
+    if not auto_report.is_running(): auto_report.start()
 
 autoreport_group = app_commands.Group(name="autoreport", description="تقرير تلقائي أسبوعي/شهري", guild_only=True)
 
@@ -351,3 +353,142 @@ async def ar_now(interaction: discord.Interaction):
 
 
 bot.tree.add_command(autoreport_group)
+
+
+# === أوامر الإدارة الإضافية (مسح الداتا وقائمة البوينتات) ===
+class ConfirmResetAllView(discord.ui.View):
+    def __init__(self, author_id: int, guild_id: int):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="تأكيد مسح كل الداتا نهائياً", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await say(interaction, "❌ الزرار ده للي كتب الأمر بس.", ephemeral=True)
+            return
+        for tbl in ("users", "adjustments", "balances", "payouts", "warns", "orders"):
+            try:
+                db.execute(f"DELETE FROM {tbl} WHERE guild_id=?", (self.guild_id,))
+            except Exception:
+                pass
+        db.commit()
+        await interaction.response.edit_message(content="✅ **تم مسح كل داتا الأعضاء والنقاط والساعات والورنات والطلبات في السيرفر بنجاح!**", view=None)
+
+    @discord.ui.button(label="إلغاء", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await say(interaction, "❌ الزرار ده للي كتب الأمر بس.", ephemeral=True)
+            return
+        await interaction.response.edit_message(content="❎ تم إلغاء عملية المسح.", view=None)
+
+
+@app_commands.command(name="resetuser", description="[إدارة] مسح كل داتا عضو معين من البوت")
+@app_commands.describe(member="العضو المراد مسح بياناته")
+@app_commands.default_permissions(administrator=True)
+async def resetuser_cmd(interaction: discord.Interaction, member: discord.Member):
+    for tbl in ("users", "adjustments", "balances", "payouts", "warns", "orders"):
+        try:
+            db.execute(f"DELETE FROM {tbl} WHERE guild_id=? AND user_id=?", (interaction.guild_id, member.id))
+        except Exception:
+            pass
+    db.commit()
+    await say(interaction, f"✅ تم مسح كل داتا {member.mention} (البوينتات، الساعات، السجل، والتحذيرات) بنجاح.", ephemeral=True)
+
+
+@app_commands.command(name="resetall", description="[إدارة] مسح كل داتا الأعضاء والبوينتات في السيرفر بالكامل")
+@app_commands.default_permissions(administrator=True)
+async def resetall_cmd(interaction: discord.Interaction):
+    await say(
+        interaction,
+        "⚠️ **تحذير:** الخطوة دي هتمسح كل البوينتات والساعات والسجلات والورنات والطلبات لكل الأعضاء في السيرفر نهائياً (مع الإبقاء على إعدادات الرومات والمتجر). متأكد؟",
+        ephemeral=True,
+        view=ConfirmResetAllView(interaction.user.id, interaction.guild_id)
+    )
+
+
+@app_commands.command(name="pointslist", description="[إدارة] عرض قائمة بكل الأعضاء اللي معاهم بوينتات")
+@app_commands.default_permissions(administrator=True)
+async def pointslist_cmd(interaction: discord.Interaction):
+    rows = db.execute("""
+        SELECT u.user_id, u.seconds, u.earned, u.adjust, u.spent, COALESCE(b.carry, 0) as carry
+        FROM users u
+        LEFT JOIN balances b ON u.guild_id = b.guild_id AND u.user_id = b.user_id
+        WHERE u.guild_id=?
+    """, (interaction.guild_id,)).fetchall()
+    items = []
+    for r in rows:
+        tot = float(r["earned"] or 0) + float(r["adjust"] or 0) + float(r["carry"] or 0)
+        avail = max(0.0, tot - float(r["spent"] or 0))
+        secs = int(r["seconds"] or 0)
+        if avail > 0 or tot > 0 or secs > 0:
+            items.append((avail, tot, secs, r["user_id"]))
+    items.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    if not items:
+        await say(interaction, "📭 مفيش أي عضو معاه بوينتات أو ساعات مسجلة حالياً.")
+        return
+    pv = float(get_settings(interaction.guild_id)["point_value"] or 0)
+    lines = []
+    for i, (avail, tot, secs, uid) in enumerate(items[:30], 1):
+        money_txt = f" — **{fmt_num(avail * pv)}**" if pv > 0 else ""
+        lines.append(f"`{i}.` <@{uid}> — **{fmt_num(avail)}** نقطة (إجمالي: {fmt_num(tot)}) | ⏱️ {fmt_dur(secs)}{money_txt}")
+    emb = discord.Embed(
+        title=f"📊 قائمة بوينتات الأعضاء ({len(items)} عضو)",
+        description=chr(10).join(lines),
+        color=discord.Color.gold()
+    )
+    emb.set_footer(text="Dev by DAWLA")
+    await say(interaction, embed=emb)
+
+for _cmd in (resetuser_cmd, resetall_cmd, pointslist_cmd):
+    if not bot.tree.get_command(_cmd.name):
+        bot.tree.add_command(_cmd)
+
+
+class ConfirmFactoryResetView(discord.ui.View):
+    def __init__(self, author_id: int, guild_id: int):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="تأكيد مسح كل شيء نهائياً (Factory Reset)", style=discord.ButtonStyle.danger, emoji="💣")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await say(interaction, "❌ الزرار ده للي كتب الأمر بس.", ephemeral=True)
+            return
+        tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        for tbl in tables:
+            try:
+                cols = [c[1] for c in db.execute(f"PRAGMA table_info({tbl})").fetchall()]
+                if "guild_id" in cols:
+                    db.execute(f"DELETE FROM {tbl} WHERE guild_id=?", (self.guild_id,))
+                elif tbl == "sqlite_sequence":
+                    db.execute("DELETE FROM sqlite_sequence")
+            except Exception:
+                pass
+        db.commit()
+        await interaction.response.edit_message(
+            content="💣 **تم مسح كل داتا البوت بالكامل (النقاط، المنتجات، الطلبات، الورنات، الفويسات، والإعدادات) ورجع كأنه جديد تماماً!**",
+            view=None
+        )
+
+    @discord.ui.button(label="إلغاء", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await say(interaction, "❌ الزرار ده للي كتب الأمر بس.", ephemeral=True)
+            return
+        await interaction.response.edit_message(content="❎ تم إلغاء عملية التصفير الشامل.", view=None)
+
+
+@app_commands.command(name="factoryreset", description="[إدارة] مسح كل داتا البوت بالكامل (منتجات، نقاط، ورنات، إعدادات) كأنه جديد")
+@app_commands.default_permissions(administrator=True)
+async def factoryreset_cmd(interaction: discord.Interaction):
+    await say(
+        interaction,
+        "💣 **تحذير خطير:** الأمر ده هيمسح **كل حاجة** في البوت (النقاط، الساعات، منتجات المتجر، الطلبات، التحذيرات، الرومات المتتبعة، وكل الإعدادات) وهيرجّع البوت أبيض من الصفر! متأكد؟",
+        ephemeral=True,
+        view=ConfirmFactoryResetView(interaction.user.id, interaction.guild_id)
+    )
+
+if not bot.tree.get_command(factoryreset_cmd.name):
+    bot.tree.add_command(factoryreset_cmd)

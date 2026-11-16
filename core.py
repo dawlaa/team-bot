@@ -122,6 +122,7 @@ def _add_column(table: str, coldef: str) -> None:
 
 
 _add_column("users", "spent REAL NOT NULL DEFAULT 0")
+_add_column("orders", "delivery_info TEXT")
 db.commit()
 
 SETTING_KEYS = {
@@ -163,6 +164,9 @@ def cfg_set(guild_id: int, key: str, value) -> None:
 
 
 def cfg_int(guild_id: int, key: str, default: int = 0) -> int:
+    v = cfg_get(guild_id, key)
+    return int(float(v)) if v and "." in v else (int(v) if v and v.isdigit() else default)
+def _old_cfg_int(guild_id: int, key: str, default: int = 0) -> int:
     try:
         return int(float(cfg_get(guild_id, key, default)))
     except (TypeError, ValueError):
@@ -257,7 +261,9 @@ async def member_from_text(guild: discord.Guild, text: str) -> Optional[discord.
 
 
 def emb(title: Optional[str] = None, desc: Optional[str] = None, color: int = C_MAIN) -> discord.Embed:
-    return discord.Embed(title=title, description=desc, color=color, timestamp=discord.utils.utcnow())
+    e = discord.Embed(title=title, description=desc, color=color, timestamp=discord.utils.utcnow())
+    e.set_footer(text="Dev by DAWLA")
+    return e
 
 
 def is_manager(member, guild_id: int) -> bool:
@@ -276,7 +282,7 @@ def manager_check(interaction: discord.Interaction) -> bool:
     raise app_commands.CheckFailure("❌ الأمر ده للمسؤولين بس.")
 
 
-async def say(interaction: discord.Interaction, content=None, *, ephemeral: bool = True, **kw):
+async def say(interaction: discord.Interaction, content=None, *, ephemeral: bool = False, **kw):
     if interaction.response.is_done():
         return await interaction.followup.send(content, ephemeral=ephemeral, **kw)
     return await interaction.response.send_message(content, ephemeral=ephemeral, **kw)
@@ -359,16 +365,13 @@ class TrackerBot(commands.Bot):
             r = fn(self)
             if inspect.isawaitable(r):
                 await r
-        gid = os.getenv("GUILD_ID")
-        if gid:  # مزامنة فورية على سيرفر واحد
-            g = discord.Object(id=int(gid))
-            self.tree.copy_global_to(guild=g)
-            await self.tree.sync(guild=g)
-        else:
-            await self.tree.sync()
-
     async def on_ready(self):
         print(f"شغال كـ {self.user} على {len(self.guilds)} سيرفر")
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Dev by DAWLA"))
+        for guild in self.guilds:
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            print(f"SYNCED TO: {guild.name}")
 
 
 bot = TrackerBot()
@@ -382,6 +385,6 @@ async def on_app_error(interaction: discord.Interaction, error: app_commands.App
         print("command error:", repr(error))
         msg = "⚠️ حصل خطأ غير متوقع، جرب تاني."
     try:
-        await say(interaction, msg)
+        await say(interaction, msg, ephemeral=isinstance(error, app_commands.CheckFailure))
     except discord.HTTPException:
         pass

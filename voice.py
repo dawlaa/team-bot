@@ -97,7 +97,9 @@ async def _wait():
     await bot.wait_until_ready()
 
 
-SETUP_HOOKS.append(lambda b: accrue.start())
+@bot.listen("on_ready")
+async def _start_accrue():
+    if not accrue.is_running(): accrue.start()
 
 
 def do_start(guild: discord.Guild) -> tuple[bool, str]:

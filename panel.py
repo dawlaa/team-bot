@@ -76,7 +76,7 @@ def panel_embed(guild: discord.Guild, section: str) -> discord.Embed:
         e.add_field(name="بيتحسب دلوقتي", value=str(live_count(guild)))
         e.add_field(name="طلبات معلقة", value=str(pending))
         e.add_field(name="تيكيتات مفتوحة", value=str(tk))
-    e.set_footer(text=f"لوحة التحكم | {section}")
+    e.set_footer(text=f"Dev by DAWLA | {section}")
     return e
 
 
@@ -91,7 +91,7 @@ class PanelBtn(discord.ui.DynamicItem[discord.ui.Button], template=r"pnb:(?P<act
 
     async def callback(self, interaction: discord.Interaction):
         if not is_manager(interaction.user, interaction.guild_id):
-            return await say(interaction, "❌ للمسؤولين بس.")
+            return await say(interaction, "❌ للمسؤولين بس.", ephemeral=True)
         h = HANDLERS.get(self.action)
         if h is None:
             return await say(interaction, "الزرار ده مش متاح.")
@@ -114,7 +114,7 @@ class PanelSection(discord.ui.DynamicItem[discord.ui.Select], template=r"pns:sec
 
     async def callback(self, interaction: discord.Interaction):
         if not is_manager(interaction.user, interaction.guild_id):
-            return await say(interaction, "❌ للمسؤولين بس.")
+            return await say(interaction, "❌ للمسؤولين بس.", ephemeral=True)
         vals = (interaction.data or {}).get("values") or ["home"]
         sec = vals[0] if vals[0] in SECTIONS else "home"
         await interaction.response.edit_message(embed=panel_embed(interaction.guild, sec), view=panel_view(sec))
@@ -505,3 +505,159 @@ HANDLERS = {
 async def panel_cmd(interaction: discord.Interaction, private: bool = False):
     await interaction.response.send_message(embed=panel_embed(interaction.guild, "home"), view=panel_view("home"),
                                             ephemeral=private)
+
+# ------------------------------------------------------------------ أمر المساعدة /help
+HELP_DATA = {
+    "member": ("👤 أوامر الأعضاء (متاحة للجميع)", [
+        ("`/me`", "يعرض وقتك، نقاطك، ترتيبك، ومستحقاتك المالية."),
+        ("`/top`", "يعرض قائمة المتصدرين في السيرفر."),
+        ("`/store`", "يفتح المتجر لاستبدال نقاطك بمنتجات أو رولات."),
+        ("`/myorders`", "يعرض سجل آخر طلباتك من المتجر."),
+        ("`/mywarns`", "يعرض التحذيرات (الورنات) المسجلة عليك."),
+        ("`/help`", "يعرض قائمة أوامر البوت وشرحها."),
+    ]),
+    "voice": ("🔊 أوامر التحكم والفويس (للإدارة)", [
+        ("`/panel`", "يفتح لوحة التحكم الكاملة بالأزرار والقوائم."),
+        ("`/start`", "يبدأ احتساب النقاط والوقت للأعضاء في الفويس."),
+        ("`/stop`", "يوقف احتساب النقاط مؤقتاً."),
+        ("`/status`", "يعرض حالة البوت، المعدل الحالي، وعدد المتواجدين."),
+        ("`/channels add`", "إضافة فويس أو كاتيجوري لقائمة الحساب."),
+        ("`/channels remove`", "حذف فويس أو كاتيجوري من قائمة الحساب."),
+        ("`/channels list`", "عرض الفويسات المحسوبة حالياً."),
+        ("`/settings rate`", "تحديد عدد النقاط المكتسبة في الساعة."),
+        ("`/settings money`", "تحديد قيمة النقطة الواحدة بالفلوس."),
+        ("`/settings min_members`", "أقل عدد أشخاص في الروم لبدء الحساب."),
+        ("`/settings ignore_deafened`", "تفعيل أو إلغاء تجاهل من يفعل ديفن."),
+        ("`/settings ignore_muted`", "تفعيل أو إلغاء تجاهل من يفعل ميوت."),
+        ("`/settings manager_role`", "تحديد رتبة الإدارة المسموح لها بالتحكم."),
+        ("`/settings log_channel`", "تحديد روم اللوجات الافتراضي."),
+        ("`/settings timezone`", "تحديد المنطقة الزمنية للسيرفر."),
+    ]),
+    "points": ("➕ أوامر البوينتات والتصفير (للإدارة)", [
+        ("`/points add`", "إضافة نقاط يدوية لعضو مع ذكر السبب."),
+        ("`/points remove`", "سحب أو خصم نقاط من عضو مع ذكر السبب."),
+        ("`/points set`", "ضبط إجمالي نقاط عضو على رقم محدد."),
+        ("`/points history`", "عرض سجل التعديلات اليدوية لعضو."),
+        ("`/pointslist`", "عرض قائمة بكل الأعضاء اللي معاهم بوينتات وساعات."),
+        ("`/user`", "عرض تفاصيل حساب ونقاط عضو معين."),
+        ("`/resetuser`", "مسح كل داتا وبوينتات عضو معين من البوت."),
+        ("`/resetall`", "تصفير داتا وبوينتات كل أعضاء السيرفر مع الإبقاء على الإعدادات."),
+        ("`/factoryreset`", "مسح كل داتا البوت بالكامل (منتجات، نقاط، ورنات، إعدادات) كأنه جديد."),
+    ]),
+    "money": ("💵 أوامر الفلوس والتقارير (للإدارة)", [
+        ("`/pay add`", "تسجيل مبلغ مالي تم دفعه لعضو."),
+        ("`/pay summary`", "عرض ملخص المدفوع والمتبقي لكل الأعضاء."),
+        ("`/pay history`", "عرض سجل مدفوعات عضو معين."),
+        ("`/pay undo`", "إلغاء عملية دفع مسجلة برقمها."),
+        ("`/report`", "استخراج تقرير شامل بصيغة CSV (إكسيل)."),
+        ("`/period close`", "إغلاق الفترة الحالية، تصفير النقاط، وترحيل المتبقي."),
+        ("`/autoreport set`", "ضبط وتفعيل التقرير التلقائي الأسبوعي أو الشهري."),
+        ("`/autoreport status`", "عرض حالة وموعد التقرير التلقائي."),
+        ("`/autoreport now`", "إرسال التقرير فوراً بدون تصفير النقاط."),
+        ("`/autoreport off`", "إيقاف التقرير التلقائي."),
+    ]),
+    "rates": ("⚡ أوامر البوستات والمعدلات (للإدارة)", [
+        ("`/boost add`", "إضافة مضاعف نقاط مجدول بأيام وساعات محددة."),
+        ("`/boost list`", "عرض قائمة البوستات المضافة."),
+        ("`/boost remove`", "حذف بوست برقم الـ ID الخاص به."),
+        ("`/boost toggle`", "تشغيل أو إيقاف بوست بدون حذفه."),
+        ("`/boost now`", "تشغيل مضاعف نقاط فوري لعدد دقائق."),
+        ("`/boost end_now`", "إيقاف البوست الفوري الحالي."),
+        ("`/rates set_channel`", "تحديد معدل نقاط خاص لفويس أو كاتيجوري."),
+        ("`/rates clear_channel`", "حذف المعدل الخاص بفويس أو كاتيجوري."),
+        ("`/rates set_role`", "تحديد معدل نقاط خاص لرتبة معينة."),
+        ("`/rates clear_role`", "حذف المعدل الخاص برتبة."),
+        ("`/rates list`", "عرض جميع المعدلات الخاصة المفعلة."),
+        ("`/people mode`", "تحديد وضع الحساب (للجميع أو القائمة البيضاء فقط)."),
+        ("`/people add`", "إضافة شخص للحساب وتحديد فويساته."),
+        ("`/people block`", "استبعاد شخص من احتساب النقاط."),
+        ("`/people remove`", "إزالة شخص من القائمة وإرجاعه للوضع العام."),
+        ("`/people list`", "عرض قائمة الأشخاص المضافين والمستبعدين."),
+    ]),
+    "shop": ("🛒 أوامر المتجر (للإدارة)", [
+        ("`/shop add`", "إضافة منتج جديد للمتجر بسعر ومخزون ورول اختياري."),
+        ("`/shop edit`", "تعديل بيانات أو سعر أو رول منتج عبر نافذة منبثقة."),
+        ("`/shop remove`", "حذف منتج من المتجر."),
+        ("`/shop list`", "عرض جميع منتجات المتجر."),
+        ("`/shop panel`", "نشر رسالة المتجر التفاعلية بزرار الشراء."),
+        ("`/shop orders`", "عرض قائمة طلبات الأعضاء."),
+        ("`/shop done`", "تأكيد تسليم طلب برقم الطلب."),
+        ("`/shop refund`", "رفض طلب واسترجاع النقاط للعضو."),
+        ("`/shop orders_channel`", "تحديد روم استقبال إشعارات الطلبات الجديدة."),
+    ]),
+    "team": ("👮 أوامر التحذيرات والتيكيتات (للإدارة)", [
+        ("`/warn add`", "إعطاء تحذير (ورن) لعضو مع إمكانية خصم نقاط."),
+        ("`/warn list`", "عرض التحذيرات الفعالة لعضو معين."),
+        ("`/warn remove`", "إلغاء تحذير برقم التحذير واسترجاع النقاط."),
+        ("`/warn clear`", "مسح جميع تحذيرات عضو معين."),
+        ("`/warn config`", "ضبط الحد الأقصى للتحذيرات والتايم أوت التلقائي."),
+        ("`/ticket setup`", "تحديد كاتيجوري التيكيتات ورتبة فريق الدعم."),
+        ("`/ticket panel`", "نشر رسالة فتح التيكيت التفاعلية."),
+        ("`/ticket claim`", "استلام التيكيت المفتوح حالياً."),
+        ("`/ticket add`", "إضافة عضو للتيكيت الحالي."),
+        ("`/ticket remove`", "إزالة عضو من التيكيت الحالي."),
+        ("`/ticket close`", "إغلاق التيكيت الحالي وحفظ الترانسكريبت."),
+        ("`/ticket list`", "عرض جميع التيكيتات المفتوحة حالياً."),
+    ]),
+    "tools": ("🧰 أوامر اللوجات والإمبيد (للإدارة)", [
+        ("`/cmdlog`", "تحديد روم لوجات لتسجيل كل أوامر البوت المنفذة."),
+        ("`/logs set`", "تحديد روم لوج لقسم معين."),
+        ("`/logs set_all`", "توجيه جميع اللوجات لروم واحد."),
+        ("`/logs clear`", "حذف روم اللوج الخاص بقسم وإرجاعه للافتراضي."),
+        ("`/logs toggle`", "تشغيل أو إيقاف تسجيل اللوج لقسم معين."),
+        ("`/logs list`", "عرض إعدادات رومات اللوج الحالية."),
+        ("`/embed send`", "إنشاء وإرسال رسالة إمبيد جديدة."),
+        ("`/embed edit`", "تعديل رسالة إمبيد سابقة للبوت."),
+        ("`/embed field_add`", "إضافة حقل (Field) داخل رسالة إمبيد."),
+        ("`/embed field_remove`", "حذف حقل من إمبيد برقم الحقل."),
+        ("`/embed json`", "إرسال رسالة إمبيد بصيغة JSON."),
+    ]),
+}
+
+def build_help_embed(cat: str, is_admin: bool) -> discord.Embed:
+    keys = list(HELP_DATA.keys()) if is_admin else ["member"]
+    if cat not in keys:
+        cat = "member"
+    title, cmds = HELP_DATA[cat]
+    desc = chr(10).join(f"• {c} — {d}" for c, d in cmds)
+    e = emb(f"📖 دليل أوامر البوت — {title}", desc, color=C_MAIN)
+    if is_admin:
+        e.set_footer(text="Dev by DAWLA • استخدم القائمة بالأسفل للتنقل بين الأقسام")
+    return e
+
+class HelpSelect(discord.ui.Select):
+    def __init__(self, current: str, is_admin: bool):
+        keys = list(HELP_DATA.keys()) if is_admin else ["member"]
+        opts = [
+            discord.SelectOption(
+                label=HELP_DATA[k][0].split(" ", 1)[1][:100],
+                value=k,
+                emoji=HELP_DATA[k][0].split(" ", 1)[0],
+                default=(k == current)
+            ) for k in keys
+        ]
+        super().__init__(placeholder="اختر القسم لعرض أوامره...", options=opts)
+        self.is_admin = is_admin
+
+    async def callback(self, interaction: discord.Interaction):
+        sec = self.values[0]
+        await interaction.response.edit_message(
+            embed=build_help_embed(sec, self.is_admin),
+            view=HelpView(sec, self.is_admin)
+        )
+
+class HelpView(discord.ui.View):
+    def __init__(self, current: str, is_admin: bool):
+        super().__init__(timeout=180)
+        if is_admin:
+            self.add_item(HelpSelect(current, is_admin))
+
+@bot.tree.command(name="help", description="عرض قائمة أوامر البوت مرتبة حسب الأقسام مع شرح مبسط")
+@app_commands.guild_only()
+async def help_cmd(interaction: discord.Interaction):
+    admin = is_manager(interaction.user, interaction.guild_id)
+    await interaction.response.send_message(
+        embed=build_help_embed("member", admin),
+        view=HelpView("member", admin),
+        ephemeral=True
+    )
